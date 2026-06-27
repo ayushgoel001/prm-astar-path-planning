@@ -1,0 +1,7 @@
+scenario,algorithm,success_rate,avg_length_px,avg_time_ms,avg_size
+Maze 1 Hard,PRM + A*,1.0,592.1,643.2,502
+Maze 1 Hard,RRT,1.0,798.1,603.3,598
+Maze 2 Grid,PRM + A*,1.0,816.0,533.1,502
+Maze 2 Grid,RRT,1.0,895.2,874.9,813
+Maze 3 Obstacles,PRM + A*,1.0,637.8,716.3,502
+Maze 3 Obstacles,RRT,1.0,879.9,79.7,162
