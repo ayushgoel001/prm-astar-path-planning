@@ -2,7 +2,18 @@ import cv2
 import numpy as np
 import pytest
 
-from src.map_loader import apply_clearance, load_map
+from src.map_loader import apply_clearance, binarize_map, load_map
+
+
+def test_binarize_map_uses_explicit_midpoint_policy():
+    grayscale = np.array([[0, 100, 127, 128, 180, 255]], dtype=np.uint8)
+
+    binary = binarize_map(grayscale)
+
+    assert np.array_equal(
+        binary,
+        np.array([[0, 0, 0, 255, 255, 255]], dtype=np.uint8),
+    )
 
 
 def test_load_map_returns_binary_image(tmp_path):
@@ -21,7 +32,15 @@ def test_load_map_returns_binary_image(tmp_path):
     loaded = load_map(image_path)
 
     assert loaded.shape == image.shape
-    assert set(np.unique(loaded)).issubset({0, 255})
+    expected = np.array(
+        [
+            [0, 0, 255],
+            [0, 255, 255],
+            [0, 255, 255],
+        ],
+        dtype=np.uint8,
+    )
+    assert np.array_equal(loaded, expected)
 
 
 def test_load_map_rejects_missing_file(tmp_path):

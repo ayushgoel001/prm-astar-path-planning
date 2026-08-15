@@ -99,6 +99,17 @@ def test_build_roadmap_edges_are_collision_free():
             assert not collision(nodes[node], nodes[neighbor], obstacle_map)
 
 
+def test_build_roadmap_rejects_adversarial_thin_obstacle_edge():
+    obstacle_map = np.full((6, 8), 255, dtype=np.uint8)
+    obstacle_map[1, 1] = 0
+    nodes = np.array([[0, 0], [2, 5]])
+
+    edges, total_edges = build_roadmap(nodes, obstacle_map, k_neighbors=1)
+
+    assert edges == {0: [], 1: []}
+    assert total_edges == 0
+
+
 def test_build_roadmap_rejects_invalid_neighbor_count():
     obstacle_map = np.full((20, 20), 255, dtype=np.uint8)
     nodes = np.array([[5, 5], [10, 10]])

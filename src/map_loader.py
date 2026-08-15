@@ -7,6 +7,21 @@ import cv2
 import numpy as np
 
 
+MAP_THRESHOLD = 127
+
+
+def binarize_map(grayscale: np.ndarray) -> np.ndarray:
+    """Convert a grayscale image to 0=obstacle, 255=free occupancy values.
+
+    Grayscale values up to and including 127 are obstacles. Values above 127
+    are free space.
+    """
+    grayscale = np.asarray(grayscale)
+    if grayscale.ndim != 2:
+        raise ValueError("grayscale map must be a two-dimensional array")
+    return np.where(grayscale > MAP_THRESHOLD, 255, 0).astype(np.uint8)
+
+
 def load_map(image_path: str | Path) -> np.ndarray:
     """
     Load a maze image and convert it to a binary obstacle map.
@@ -33,8 +48,7 @@ def load_map(image_path: str | Path) -> np.ndarray:
     if gray is None:
         raise ValueError(f"OpenCV could not read the image: {path}")
 
-    _, binary = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
-    return binary
+    return binarize_map(gray)
 
 
 def apply_clearance(obstacle_map: np.ndarray, clearance: int) -> np.ndarray:

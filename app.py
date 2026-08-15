@@ -25,7 +25,7 @@ from matplotlib.collections import LineCollection
 # Local modules
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from src.astar import astar, path_length
-from src.map_loader import apply_clearance, load_map
+from src.map_loader import apply_clearance, binarize_map, load_map
 from src.prm import build_roadmap, sample_free_space
 from src.rrt import RRTPlanner, rrt_path_length
 from src.smoother import shortcut_smooth, smooth_path_length
@@ -74,8 +74,7 @@ def decode_uploaded_map(uploaded_file) -> np.ndarray | None:
     image = cv2.imdecode(data, cv2.IMREAD_GRAYSCALE)
     if image is None:
         return None
-    _, binary_map = cv2.threshold(image, 127, 255, cv2.THRESH_BINARY)
-    return binary_map
+    return binarize_map(image)
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +217,7 @@ def run_prm_planner(
 
     build_start = time.perf_counter()
     nodes = sample_free_space(safe_map, num_nodes, seed=seed)
+    sampled_node_count = len(nodes)
     start_idx = len(nodes)
     goal_idx = len(nodes) + 1
     nodes = np.vstack([nodes, start, goal])
@@ -227,7 +227,7 @@ def run_prm_planner(
     build_ms = (time.perf_counter() - build_start) * 1000
 
     search_start = time.perf_counter()
-    path, explored = astar(edges, nodes, start_idx, goal_idx)
+    path, expanded_nodes = astar(edges, nodes, start_idx, goal_idx)
     search_ms = (time.perf_counter() - search_start) * 1000
 
     raw_length = path_length(path, nodes) if path else 0.0
@@ -242,7 +242,8 @@ def run_prm_planner(
 
     length_label = f"{round(final_length)} px" if path else "no path"
     title = (
-        f"PRM + A*  |  {len(nodes)} nodes  |  {total_edges} edges  |  "
+        f"PRM + A*  |  {sampled_node_count} samples  |  "
+        f"{len(nodes)} graph nodes  |  {total_edges} edges  |  "
         f"Path length: {length_label}"
     )
 
@@ -250,9 +251,10 @@ def run_prm_planner(
 
     stats = {
         "found": bool(path),
-        "nodes": len(nodes),
+        "sampled_nodes": sampled_node_count,
+        "graph_nodes": len(nodes),
         "edges": total_edges,
-        "explored": explored,
+        "expanded_nodes": expanded_nodes,
         "path_length": final_length,
         "build_ms": build_ms,
         "search_ms": search_ms,
@@ -350,11 +352,22 @@ def render_sidebar() -> dict:
         # Algorithm settings
         st.subheader("Algorithm")
         algorithm = st.selectbox("Planner", ["PRM + A*", "RRT"])
-        num_nodes = st.slider("PRM nodes / RRT iterations scale", 100, 1000, 400, step=50)
-        k_neighbors = st.slider("PRM k-nearest neighbors", 5, 40, 15)
+        if algorithm == "PRM + A*":
+            num_nodes = st.slider(
+                "PRM sampled configurations", 100, 1000, 400, step=50
+            )
+            k_neighbors = st.slider("PRM k-nearest neighbors", 5, 40, 15)
+            max_iterations = 0
+            apply_smoothing = st.checkbox("Apply path smoothing", value=True)
+        else:
+            num_nodes = 0
+            k_neighbors = 0
+            max_iterations = st.slider(
+                "RRT maximum iterations", 1000, 10000, 4000, step=500
+            )
+            apply_smoothing = False
         clearance = st.slider("Obstacle clearance (px)", 0, 15, 3)
         seed = st.number_input("Random seed", value=42, min_value=0, max_value=9999)
-        apply_smoothing = st.checkbox("Apply path smoothing", value=True)
 
         st.divider()
 
@@ -384,6 +397,7 @@ def render_sidebar() -> dict:
         "algorithm": algorithm,
         "num_nodes": int(num_nodes),
         "k_neighbors": int(k_neighbors),
+        "max_iterations": int(max_iterations),
         "clearance": int(clearance),
         "seed": int(seed),
         "apply_smoothing": bool(apply_smoothing),
@@ -399,15 +413,16 @@ def render_sidebar() -> dict:
 
 def display_prm_metrics(stats: dict) -> None:
     """Display PRM + A* run statistics as Streamlit metric tiles."""
-    cols = st.columns(5)
-    cols[0].metric("Nodes", stats["nodes"])
-    cols[1].metric("Edges", stats["edges"])
-    cols[2].metric("A* explored", stats["explored"])
-    cols[3].metric(
+    cols = st.columns(6)
+    cols[0].metric("Sampled nodes", stats["sampled_nodes"])
+    cols[1].metric("Graph nodes", stats["graph_nodes"])
+    cols[2].metric("Edges", stats["edges"])
+    cols[3].metric("A* expanded nodes", stats["expanded_nodes"])
+    cols[4].metric(
         "Path length",
         f"{stats['path_length']:.0f} px" if stats["found"] else "—",
     )
-    cols[4].metric("Total time", f"{stats['total_ms']:.0f} ms")
+    cols[5].metric("Total time", f"{stats['total_ms']:.0f} ms")
 
 
 def display_rrt_metrics(stats: dict) -> None:
@@ -493,7 +508,7 @@ def main() -> None:
                     safe_map=safe_map,
                     start=start_coord,
                     goal=goal_coord,
-                    max_iter=config["num_nodes"] * 10,
+                    max_iter=config["max_iterations"],
                     seed=config["seed"],
                 )
                 display_rrt_metrics(stats)
@@ -541,10 +556,11 @@ def main() -> None:
 3. Accepts extensions only when the connecting segment is collision-free.
 4. Terminates when the tree reaches within the goal radius.
 
-**Path smoothing**
+**PRM path smoothing**
 
-Shortcut-based smoothing iteratively removes redundant waypoints by directly
-connecting non-adjacent nodes whenever the segment is collision-free.
+The optional PRM post-processing step removes redundant waypoints by directly
+connecting non-adjacent nodes whenever the segment is collision-free. It is
+not applied to the RRT result.
             """
         )
 

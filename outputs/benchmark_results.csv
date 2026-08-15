@@ -1,5 +1,5 @@
-map,nodes,edges,astar_explored,path_found,path_length_px,build_time_ms,search_time_ms,total_time_ms
-Maze 1 Easy,502,3852,9,True,221.1,457.0,1.2,458.2
-Maze 1 Hard,502,3814,431,True,592.1,464.5,33.6,498.1
-Maze 2 Grid,502,2272,514,True,816.0,483.1,27.2,510.4
-Maze 3 Obstacles,502,5317,124,True,637.8,488.8,15.7,504.5
+map,sampled_nodes,graph_nodes,edges,astar_expanded_nodes,path_found,path_length_px,build_time_ms,search_time_ms,total_time_ms
+Maze 1 Easy,500,502,3908,8,True,220.1,11775.5,1.8,11777.3
+Maze 1 Hard,500,502,3867,43,True,626.8,12318.0,1.5,12319.5
+Maze 2 Grid,500,502,2233,355,True,824.9,15060.1,19.6,15079.7
+Maze 3 Obstacles,500,502,5312,92,True,637.8,14792.5,11.1,14803.5

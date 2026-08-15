@@ -21,9 +21,8 @@ def astar(
     """
     A* search on the PRM graph to find the shortest path from start to goal.
 
-    Uses a binary min-heap (heapq) for the priority queue and re-expands
-    nodes whenever a shorter path is discovered, matching the standard A*
-    specification.
+    Uses a binary min-heap (heapq) for the priority queue. Heap entries carry
+    their g-cost so stale entries can be discarded without re-expanding nodes.
 
     Args:
         graph: Adjacency list — maps node index to list of neighbor indices.
@@ -35,16 +34,24 @@ def astar(
         Tuple of:
           - path: Ordered list of node indices from start to goal.
                   Empty list if no path exists.
-          - explored: Number of nodes popped from the priority queue.
+          - expanded_nodes: Number of unique valid graph vertices expanded.
     """
-    heap: list[tuple[float, int]] = [(0.0, start)]
+    heap: list[tuple[float, int, float]] = [
+        (heuristic(nodes[start], nodes[goal]), start, 0.0)
+    ]
     came_from: dict[int, int | None] = {start: None}
     cost_so_far: dict[int, float] = {start: 0.0}
-    explored = 0
+    expanded: set[int] = set()
 
     while heap:
-        _, current = heapq.heappop(heap)
-        explored += 1
+        _, current, entry_cost = heapq.heappop(heap)
+
+        if entry_cost > cost_so_far.get(current, float("inf")):
+            continue
+        if current in expanded:
+            continue
+
+        expanded.add(current)
 
         if current == goal:
             break
@@ -55,11 +62,11 @@ def astar(
             if next_node not in cost_so_far or new_cost < cost_so_far[next_node]:
                 cost_so_far[next_node] = new_cost
                 priority = new_cost + heuristic(nodes[next_node], nodes[goal])
-                heapq.heappush(heap, (priority, next_node))
+                heapq.heappush(heap, (priority, next_node, new_cost))
                 came_from[next_node] = current
 
     if goal not in came_from:
-        return [], explored
+        return [], len(expanded)
 
     path: list[int] = []
     current = goal
@@ -69,9 +76,9 @@ def astar(
     path.reverse()
 
     if path[0] != start:
-        return [], explored
+        return [], len(expanded)
 
-    return path, explored
+    return path, len(expanded)
 
 
 def path_length(path: list[int], nodes: np.ndarray) -> float:

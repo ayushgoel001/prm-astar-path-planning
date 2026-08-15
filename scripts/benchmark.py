@@ -28,7 +28,7 @@ from src.visualizer import visualize
 
 
 SEED = 42
-NUM_NODES = 500
+NUM_SAMPLES = 500
 K_NEIGHBORS = 20
 CLEARANCE = 3
 
@@ -118,7 +118,8 @@ def run_case(
 
     build_start = time.perf_counter()
 
-    nodes = sample_free_space(safe_map, NUM_NODES, seed=SEED)
+    nodes = sample_free_space(safe_map, NUM_SAMPLES, seed=SEED)
+    sampled_node_count = len(nodes)
     start_idx = len(nodes)
     goal_idx = len(nodes) + 1
     nodes = np.vstack([nodes, start_coord, goal_coord])
@@ -133,19 +134,27 @@ def run_case(
     build_time = time.perf_counter() - build_start
 
     search_start = time.perf_counter()
-    path, explored = astar(edges, nodes, start_idx, goal_idx)
+    path, expanded_nodes = astar(edges, nodes, start_idx, goal_idx)
     search_time = time.perf_counter() - search_start
 
     stats = PlanningStats(
         map_name=case["name"],
-        num_nodes=len(nodes),
+        num_sampled_nodes=sampled_node_count,
+        num_graph_nodes=len(nodes),
         num_edges=total_edges,
-        astar_explored=explored,
+        astar_expanded_nodes=expanded_nodes,
         path_found=len(path) > 0,
         path_length_px=path_length(path, nodes) if path else 0.0,
         build_time_s=build_time,
         search_time_s=search_time,
     )
+
+    if stats.astar_expanded_nodes > stats.num_graph_nodes:
+        raise RuntimeError("A* expanded-node count exceeds roadmap graph nodes")
+    if stats.path_found and (
+        not np.isfinite(stats.path_length_px) or stats.path_length_px < 0
+    ):
+        raise RuntimeError("Successful path has an invalid path length")
 
     return stats, path, nodes, edges, obstacle_map, start_idx, goal_idx
 
@@ -155,23 +164,25 @@ def print_results_table(all_stats: list[PlanningStats]) -> None:
     print()
     print(
         f"{'Scenario':<22}"
-        f"{'Nodes':>7}"
+        f"{'Samples':>9}"
+        f"{'Graph':>7}"
         f"{'Edges':>8}"
-        f"{'Explored':>10}"
+        f"{'Expanded':>10}"
         f"{'Found':>8}"
         f"{'Length':>10}"
         f"{'Build':>10}"
         f"{'Search':>10}"
         f"{'Total':>10}"
     )
-    print("-" * 95)
+    print("-" * 104)
 
     for stats in all_stats:
         print(
             f"{stats.map_name[:22]:<22}"
-            f"{stats.num_nodes:>7}"
+            f"{stats.num_sampled_nodes:>9}"
+            f"{stats.num_graph_nodes:>7}"
             f"{stats.num_edges:>8}"
-            f"{stats.astar_explored:>10}"
+            f"{stats.astar_expanded_nodes:>10}"
             f"{'Yes' if stats.path_found else 'No':>8}"
             f"{stats.path_length_px:>10.1f}"
             f"{stats.build_time_s * 1000:>10.1f}"
@@ -206,7 +217,10 @@ def main() -> None:
 
     print("=" * 60)
     print("PRM + A* Benchmark")
-    print(f"nodes={NUM_NODES}  k={K_NEIGHBORS}  clearance={CLEARANCE}  seed={SEED}")
+    print(
+        f"samples={NUM_SAMPLES}  k={K_NEIGHBORS}  clearance={CLEARANCE}  "
+        f"anchor_neighbor_attempts=3*k  seed={SEED}"
+    )
     print("=" * 60)
 
     all_stats: list[PlanningStats] = []
@@ -234,7 +248,7 @@ def main() -> None:
             status = "Path found" if stats.path_found else "No path"
             print(
                 f"{status}: edges={stats.num_edges}, "
-                f"explored={stats.astar_explored}, "
+                f"expanded_nodes={stats.astar_expanded_nodes}, "
                 f"length={stats.path_length_px:.0f}px, "
                 f"time={stats.total_time_s * 1000:.0f}ms"
             )

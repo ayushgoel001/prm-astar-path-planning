@@ -85,9 +85,10 @@ class PlanningStats:
     """Collects and reports runtime statistics for one planning run."""
 
     map_name: str = ""
-    num_nodes: int = 0
+    num_sampled_nodes: int = 0
+    num_graph_nodes: int = 0
     num_edges: int = 0
-    astar_explored: int = 0
+    astar_expanded_nodes: int = 0
     path_found: bool = False
     path_length_px: float = 0.0
     build_time_s: float = 0.0
@@ -101,9 +102,10 @@ class PlanningStats:
         """Return a human-readable summary string."""
         lines = [
             f"{'Map':<22}: {self.map_name}",
-            f"{'Nodes sampled':<22}: {self.num_nodes}",
-            f"{'Edges built':<22}: {self.num_edges}",
-            f"{'A* nodes explored':<22}: {self.astar_explored}",
+            f"{'PRM sampled nodes':<22}: {self.num_sampled_nodes}",
+            f"{'Roadmap graph nodes':<22}: {self.num_graph_nodes}",
+            f"{'Roadmap edges':<22}: {self.num_edges}",
+            f"{'A* expanded nodes':<22}: {self.astar_expanded_nodes}",
             f"{'Path found':<22}: {'Yes' if self.path_found else 'No'}",
             f"{'Path length (px)':<22}: {self.path_length_px:.1f}",
             f"{'Roadmap build time':<22}: {self.build_time_s * 1000:.1f} ms",
@@ -115,9 +117,10 @@ class PlanningStats:
     def to_dict(self) -> dict:
         return {
             "map": self.map_name,
-            "nodes": self.num_nodes,
+            "sampled_nodes": self.num_sampled_nodes,
+            "graph_nodes": self.num_graph_nodes,
             "edges": self.num_edges,
-            "astar_explored": self.astar_explored,
+            "astar_expanded_nodes": self.astar_expanded_nodes,
             "path_found": self.path_found,
             "path_length_px": round(self.path_length_px, 1),
             "build_time_ms": round(self.build_time_s * 1000, 1),

@@ -1,8 +1,10 @@
 """
 compare_algorithms.py - Compare PRM + A* and RRT on fixed map scenarios.
 
-The script runs both planners on the same start-goal queries, reports aggregate
-metrics, saves a CSV file, and exports comparison figures.
+The script runs fresh PRM and RRT attempts with matched seeds on the same
+start-goal queries, reports aggregate metrics, saves a CSV file, and exports
+comparison figures. Runtime statistics include every attempt; path-length
+statistics include successful runs only.
 
 Usage:
     python scripts/compare_algorithms.py
@@ -27,6 +29,7 @@ from matplotlib.collections import LineCollection
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.astar import astar, path_length
+from src.collision_checker import collision
 from src.map_loader import apply_clearance, load_map
 from src.prm import build_roadmap, sample_free_space
 from src.rrt import RRTPlanner, rrt_path_length
@@ -35,9 +38,10 @@ from src.utils import set_seed, validate_planning_point
 
 SEED = 42
 CLEARANCE = 3
-NUM_RUNS = 5
+NUM_RUNS = 10
+SEEDS = [SEED + run_index for run_index in range(NUM_RUNS)]
 
-PRM_NODES = 500
+PRM_SAMPLES = 500
 PRM_NEIGHBORS = 20
 
 RRT_MAX_ITER = 8000
@@ -71,12 +75,17 @@ TEST_CASES: list[dict] = [
 class PlannerRun:
     """Single-run output for a planner."""
 
+    seed: int
     found: bool
     length_px: float
     time_s: float
-    size: int
     path: list
     nodes: np.ndarray | None
+    prm_samples: int | None = None
+    graph_vertices: int | None = None
+    graph_edges: int | None = None
+    astar_expanded_nodes: int | None = None
+    tree_nodes_at_termination: int | None = None
 
 
 @dataclass
@@ -85,10 +94,17 @@ class SummaryResult:
 
     scenario: str
     algorithm: str
-    success_rate: float
-    avg_length_px: float
-    avg_time_ms: float
-    avg_size: int
+    attempted_runs: int
+    successful_runs: int
+    success_rate_percent: float
+    mean_runtime_ms: float
+    runtime_std_ms: float
+    mean_path_length_px: float | None
+    path_length_std_px: float | None
+    prm_samples_per_run: int | None
+    mean_graph_vertices: float | None
+    mean_graph_edges: float | None
+    mean_tree_nodes_at_termination: float | None
 
 
 def sanitize_filename(name: str) -> str:
@@ -133,6 +149,30 @@ def validate_case(case: dict, obstacle_map: np.ndarray, safe_map: np.ndarray) ->
     }
 
 
+def validate_run_path(
+    run: PlannerRun,
+    path_coordinates: np.ndarray,
+    safe_map: np.ndarray,
+) -> None:
+    """Reject invalid run metrics before they enter aggregate results."""
+    if run.found != bool(run.path):
+        raise RuntimeError("Planner success flag does not match its returned path")
+    if not np.isfinite(run.time_s) or run.time_s < 0:
+        raise RuntimeError("Planner run has an invalid runtime")
+
+    if not run.found:
+        if run.length_px != 0.0:
+            raise RuntimeError("Failed run must not report a path length")
+        return
+
+    if not np.isfinite(run.length_px) or run.length_px < 0:
+        raise RuntimeError("Successful run has an invalid path length")
+
+    for start, goal in zip(path_coordinates, path_coordinates[1:]):
+        if collision(start, goal, safe_map):
+            raise RuntimeError("Planner returned a path containing a collision")
+
+
 def run_prm(case: dict, safe_map: np.ndarray, seed: int) -> PlannerRun:
     """Run PRM + A* once on a benchmark case."""
     start = np.array(case["start"], dtype=int)
@@ -142,32 +182,43 @@ def run_prm(case: dict, safe_map: np.ndarray, seed: int) -> PlannerRun:
 
     start_time = time.perf_counter()
 
-    nodes = sample_free_space(safe_map, PRM_NODES, seed=seed)
+    nodes = sample_free_space(safe_map, PRM_SAMPLES, seed=seed)
+    sampled_node_count = len(nodes)
     start_idx = len(nodes)
     goal_idx = len(nodes) + 1
     nodes = np.vstack([nodes, start, goal])
 
-    edges, _ = build_roadmap(
+    edges, edge_count = build_roadmap(
         nodes,
         safe_map,
         PRM_NEIGHBORS,
         anchor_indices=[start_idx, goal_idx],
     )
 
-    path, _ = astar(edges, nodes, start_idx, goal_idx)
+    path, expanded_nodes = astar(edges, nodes, start_idx, goal_idx)
     elapsed = time.perf_counter() - start_time
 
     found = len(path) > 0
     length = path_length(path, nodes) if found else 0.0
 
-    return PlannerRun(
+    if expanded_nodes > len(nodes):
+        raise RuntimeError("A* expanded-node count exceeds roadmap graph vertices")
+
+    run = PlannerRun(
+        seed=seed,
         found=found,
         length_px=length,
         time_s=elapsed,
-        size=len(nodes),
         path=path,
         nodes=nodes,
+        prm_samples=sampled_node_count,
+        graph_vertices=len(nodes),
+        graph_edges=edge_count,
+        astar_expanded_nodes=expanded_nodes,
     )
+    path_coordinates = nodes[path] if path else np.empty((0, 2))
+    validate_run_path(run, path_coordinates, safe_map)
+    return run
 
 
 def run_rrt(case: dict, safe_map: np.ndarray, seed: int) -> PlannerRun:
@@ -175,6 +226,7 @@ def run_rrt(case: dict, safe_map: np.ndarray, seed: int) -> PlannerRun:
     start = np.array(case["start"], dtype=float)
     goal = np.array(case["goal"], dtype=float)
 
+    start_time = time.perf_counter()
     planner = RRTPlanner(
         max_iter=RRT_MAX_ITER,
         step_size=RRT_STEP_SIZE,
@@ -183,7 +235,6 @@ def run_rrt(case: dict, safe_map: np.ndarray, seed: int) -> PlannerRun:
         seed=seed,
     )
 
-    start_time = time.perf_counter()
     path, _ = planner.plan(start, goal, safe_map)
     elapsed = time.perf_counter() - start_time
 
@@ -191,14 +242,17 @@ def run_rrt(case: dict, safe_map: np.ndarray, seed: int) -> PlannerRun:
     length = rrt_path_length(path) if found else 0.0
     tree_nodes = planner.nodes
 
-    return PlannerRun(
+    run = PlannerRun(
+        seed=seed,
         found=found,
         length_px=length,
         time_s=elapsed,
-        size=len(tree_nodes),
         path=path,
         nodes=tree_nodes,
+        tree_nodes_at_termination=len(tree_nodes),
     )
+    validate_run_path(run, np.array(path), safe_map)
+    return run
 
 
 def summarize_runs(
@@ -207,24 +261,79 @@ def summarize_runs(
     runs: list[PlannerRun],
 ) -> SummaryResult:
     """Aggregate repeated planner runs into one summary row."""
+    if not runs:
+        raise ValueError("At least one planner run is required")
+
     successful_runs = [run for run in runs if run.found]
 
-    success_rate = len(successful_runs) / len(runs) if runs else 0.0
-    avg_length = (
-        float(np.mean([run.length_px for run in successful_runs]))
-        if successful_runs
-        else 0.0
+    attempted_runs = len(runs)
+    successful_count = len(successful_runs)
+    success_rate_percent = successful_count / attempted_runs * 100.0
+    runtimes_ms = np.array([run.time_s * 1000 for run in runs], dtype=float)
+    successful_lengths = np.array(
+        [run.length_px for run in successful_runs],
+        dtype=float,
     )
-    avg_time_ms = float(np.mean([run.time_s for run in runs]) * 1000) if runs else 0.0
-    avg_size = int(np.mean([run.size for run in runs])) if runs else 0
+
+    if not 0.0 <= success_rate_percent <= 100.0:
+        raise RuntimeError("Success rate is outside the range 0 to 100 percent")
+    if not np.all(np.isfinite(runtimes_ms)) or np.any(runtimes_ms < 0):
+        raise RuntimeError("Runtime summary contains invalid values")
+    if successful_count and (
+        not np.all(np.isfinite(successful_lengths))
+        or np.any(successful_lengths < 0)
+    ):
+        raise RuntimeError("Successful-path summary contains invalid lengths")
+
+    prm_samples_per_run: int | None = None
+    mean_graph_vertices: float | None = None
+    mean_graph_edges: float | None = None
+    mean_tree_nodes: float | None = None
+
+    if algorithm == "PRM + A*":
+        if any(
+            run.prm_samples is None
+            or run.graph_vertices is None
+            or run.graph_edges is None
+            or run.astar_expanded_nodes is None
+            for run in runs
+        ):
+            raise RuntimeError("PRM run is missing roadmap metrics")
+        sample_counts = {run.prm_samples for run in runs}
+        if len(sample_counts) != 1:
+            raise RuntimeError("PRM runs used different sample counts")
+        prm_samples_per_run = int(sample_counts.pop())
+        mean_graph_vertices = float(
+            np.mean([run.graph_vertices for run in runs])
+        )
+        mean_graph_edges = float(np.mean([run.graph_edges for run in runs]))
+    elif algorithm == "RRT":
+        if any(run.tree_nodes_at_termination is None for run in runs):
+            raise RuntimeError("RRT run is missing tree-node metrics")
+        mean_tree_nodes = float(
+            np.mean([run.tree_nodes_at_termination for run in runs])
+        )
+    else:
+        raise ValueError(f"Unknown algorithm label: {algorithm}")
 
     return SummaryResult(
         scenario=scenario,
         algorithm=algorithm,
-        success_rate=success_rate,
-        avg_length_px=avg_length,
-        avg_time_ms=avg_time_ms,
-        avg_size=avg_size,
+        attempted_runs=attempted_runs,
+        successful_runs=successful_count,
+        success_rate_percent=success_rate_percent,
+        mean_runtime_ms=float(np.mean(runtimes_ms)),
+        runtime_std_ms=float(np.std(runtimes_ms)),
+        mean_path_length_px=(
+            float(np.mean(successful_lengths)) if successful_count else None
+        ),
+        path_length_std_px=(
+            float(np.std(successful_lengths)) if successful_count else None
+        ),
+        prm_samples_per_run=prm_samples_per_run,
+        mean_graph_vertices=mean_graph_vertices,
+        mean_graph_edges=mean_graph_edges,
+        mean_tree_nodes_at_termination=mean_tree_nodes,
     )
 
 
@@ -249,6 +358,8 @@ def save_comparison_figure(
     start = np.array(case["start"], dtype=int)
     goal = np.array(case["goal"], dtype=int)
 
+    if prm_run.nodes is None:
+        raise ValueError("PRM visualization requires roadmap nodes")
     prm_nodes = prm_run.nodes
     start_idx = len(prm_nodes) - 2
     goal_idx = len(prm_nodes) - 1
@@ -357,22 +468,52 @@ def print_results_table(results: list[SummaryResult]) -> None:
     print()
     print(
         f"{'Scenario':<20}"
-        f"{'Algorithm':<12}"
-        f"{'Success':>9}"
-        f"{'Length':>10}"
-        f"{'Time':>10}"
-        f"{'Size':>10}"
+        f"{'Algorithm':<10}"
+        f"{'Runs':>6}"
+        f"{'Success':>10}"
+        f"{'Rate':>8}"
+        f"{'Mean Len':>11}"
+        f"{'Len SD':>10}"
+        f"{'Mean ms':>10}"
+        f"{'Time SD':>10}  "
+        "Structure"
     )
-    print("-" * 71)
+    print("-" * 124)
 
     for result in results:
+        success_count = f"{result.successful_runs}/{result.attempted_runs}"
+        mean_length = (
+            f"{result.mean_path_length_px:.1f}"
+            if result.mean_path_length_px is not None
+            else "n/a"
+        )
+        length_std = (
+            f"{result.path_length_std_px:.1f}"
+            if result.path_length_std_px is not None
+            else "n/a"
+        )
+        if result.algorithm == "PRM + A*":
+            structure = (
+                f"{result.mean_graph_vertices:.1f} graph vertices; "
+                f"{result.mean_graph_edges:.1f} graph edges"
+            )
+        else:
+            structure = (
+                f"{result.mean_tree_nodes_at_termination:.1f} "
+                "tree nodes at termination"
+            )
+
         print(
             f"{result.scenario[:20]:<20}"
-            f"{result.algorithm:<12}"
-            f"{result.success_rate * 100:>8.0f}%"
-            f"{result.avg_length_px:>10.1f}"
-            f"{result.avg_time_ms:>10.1f}"
-            f"{result.avg_size:>10}"
+            f"{result.algorithm:<10}"
+            f"{result.attempted_runs:>6}"
+            f"{success_count:>10}"
+            f"{result.success_rate_percent:>7.1f}%"
+            f"{mean_length:>11}"
+            f"{length_std:>10}"
+            f"{result.mean_runtime_ms:>10.1f}"
+            f"{result.runtime_std_ms:>10.1f}  "
+            f"{structure}"
         )
 
 
@@ -386,10 +527,17 @@ def save_csv(results: list[SummaryResult], output_path: Path) -> None:
             fieldnames=[
                 "scenario",
                 "algorithm",
-                "success_rate",
-                "avg_length_px",
-                "avg_time_ms",
-                "avg_size",
+                "attempted_runs",
+                "successful_runs",
+                "success_rate_percent",
+                "mean_runtime_ms_all_runs",
+                "runtime_std_ms_all_runs",
+                "mean_path_length_px_successful_runs",
+                "path_length_std_px_successful_runs",
+                "prm_samples_per_run",
+                "mean_prm_graph_vertices",
+                "mean_prm_graph_edges",
+                "mean_rrt_tree_nodes_at_termination",
             ],
         )
         writer.writeheader()
@@ -399,10 +547,43 @@ def save_csv(results: list[SummaryResult], output_path: Path) -> None:
                 {
                     "scenario": result.scenario,
                     "algorithm": result.algorithm,
-                    "success_rate": round(result.success_rate, 3),
-                    "avg_length_px": round(result.avg_length_px, 1),
-                    "avg_time_ms": round(result.avg_time_ms, 1),
-                    "avg_size": result.avg_size,
+                    "attempted_runs": result.attempted_runs,
+                    "successful_runs": result.successful_runs,
+                    "success_rate_percent": round(
+                        result.success_rate_percent, 1
+                    ),
+                    "mean_runtime_ms_all_runs": round(
+                        result.mean_runtime_ms, 1
+                    ),
+                    "runtime_std_ms_all_runs": round(
+                        result.runtime_std_ms, 1
+                    ),
+                    "mean_path_length_px_successful_runs": (
+                        round(result.mean_path_length_px, 1)
+                        if result.mean_path_length_px is not None
+                        else ""
+                    ),
+                    "path_length_std_px_successful_runs": (
+                        round(result.path_length_std_px, 1)
+                        if result.path_length_std_px is not None
+                        else ""
+                    ),
+                    "prm_samples_per_run": result.prm_samples_per_run or "",
+                    "mean_prm_graph_vertices": (
+                        round(result.mean_graph_vertices, 1)
+                        if result.mean_graph_vertices is not None
+                        else ""
+                    ),
+                    "mean_prm_graph_edges": (
+                        round(result.mean_graph_edges, 1)
+                        if result.mean_graph_edges is not None
+                        else ""
+                    ),
+                    "mean_rrt_tree_nodes_at_termination": (
+                        round(result.mean_tree_nodes_at_termination, 1)
+                        if result.mean_tree_nodes_at_termination is not None
+                        else ""
+                    ),
                 }
             )
 
@@ -418,8 +599,11 @@ def main() -> None:
     print("=" * 64)
     print("PRM + A* vs RRT Comparison")
     print(
-        f"runs={NUM_RUNS}  clearance={CLEARANCE}  seed={SEED}  "
-        f"prm_nodes={PRM_NODES}  prm_k={PRM_NEIGHBORS}"
+        f"runs_per_algorithm={NUM_RUNS}  seeds={SEEDS}  clearance={CLEARANCE}\n"
+        f"PRM: samples={PRM_SAMPLES}, k={PRM_NEIGHBORS}, "
+        "anchor_neighbor_attempts=3*k\n"
+        f"RRT: max_iter={RRT_MAX_ITER}, step_size={RRT_STEP_SIZE}, "
+        f"goal_bias={RRT_GOAL_BIAS}, goal_radius={RRT_GOAL_RADIUS}"
     )
     print("=" * 64)
 
@@ -443,38 +627,52 @@ def main() -> None:
 
         print(f"\nScenario: {case['name']}")
 
-        prm_run = run_prm(case, safe_map, SEED)
-        prm_summary = summarize_runs(case["name"], "PRM + A*", [prm_run])
+        prm_runs: list[PlannerRun] = []
+        rrt_runs: list[PlannerRun] = []
+
+        for run_number, seed in enumerate(SEEDS, start=1):
+            prm_run = run_prm(case, safe_map, seed)
+            rrt_run = run_rrt(case, safe_map, seed)
+            prm_runs.append(prm_run)
+            rrt_runs.append(rrt_run)
+
+            print(
+                f"  run {run_number:>2}/{NUM_RUNS}, seed={seed}: "
+                f"PRM={'ok' if prm_run.found else 'fail'} "
+                f"({prm_run.time_s * 1000:.1f} ms), "
+                f"RRT={'ok' if rrt_run.found else 'fail'} "
+                f"({rrt_run.time_s * 1000:.1f} ms)"
+            )
+
+        if len(prm_runs) != NUM_RUNS or len(rrt_runs) != NUM_RUNS:
+            raise RuntimeError("Planner run count does not match NUM_RUNS")
+        if [run.seed for run in prm_runs] != [run.seed for run in rrt_runs]:
+            raise RuntimeError("PRM and RRT did not use matched seed lists")
+
+        prm_summary = summarize_runs(case["name"], "PRM + A*", prm_runs)
         all_results.append(prm_summary)
-
-        print(
-            f"PRM + A*: {'found' if prm_run.found else 'not found'}, "
-            f"length={prm_run.length_px:.0f}px, "
-            f"time={prm_run.time_s * 1000:.0f}ms"
-        )
-
-        rrt_runs = [
-            run_rrt(case, safe_map, SEED + run_index)
-            for run_index in range(NUM_RUNS)
-        ]
         rrt_summary = summarize_runs(case["name"], "RRT", rrt_runs)
         all_results.append(rrt_summary)
 
         print(
-            f"RRT: success={rrt_summary.success_rate * 100:.0f}%, "
-            f"avg_length={rrt_summary.avg_length_px:.0f}px, "
-            f"avg_time={rrt_summary.avg_time_ms:.0f}ms, "
-            f"avg_tree_size={rrt_summary.avg_size}"
+            f"  PRM summary: {prm_summary.successful_runs}/{NUM_RUNS} successful, "
+            f"mean_runtime={prm_summary.mean_runtime_ms:.1f} ms\n"
+            f"  RRT summary: {rrt_summary.successful_runs}/{NUM_RUNS} successful, "
+            f"mean_runtime={rrt_summary.mean_runtime_ms:.1f} ms"
         )
 
+        representative_prm_run = select_representative_run(prm_runs)
         representative_rrt_run = select_representative_run(rrt_runs)
         figure_path = output_dir / f"compare_{sanitize_filename(case['name'])}.png"
+
+        if representative_prm_run is None:
+            raise RuntimeError("PRM comparison produced no runs to visualize")
 
         save_comparison_figure(
             case,
             obstacle_map,
             safe_map,
-            prm_run,
+            representative_prm_run,
             representative_rrt_run,
             figure_path,
         )

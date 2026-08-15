@@ -77,6 +77,10 @@ class RRTPlanner:
         self._nodes   = [start.copy()]
         self._parents = [None]
 
+        if np.allclose(start, goal, rtol=0.0, atol=1e-9):
+            if not collision(start, goal, obstacle_map):
+                return [start.copy()], 0
+
         for iteration in range(self.max_iter):
             if self.rng.random() < self.goal_bias:
                 sample = goal.astype(float)

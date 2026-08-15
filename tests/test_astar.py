@@ -67,11 +67,11 @@ def test_astar_no_path_returns_empty():
     assert path == []
 
 
-def test_astar_explored_count_positive():
-    """A* should explore at least one node."""
+def test_astar_expanded_count_positive():
+    """A* should expand at least one node."""
     graph, nodes = make_linear_graph(5)
-    _, explored = astar(graph, nodes, start=0, goal=4)
-    assert explored >= 1
+    _, expanded_nodes = astar(graph, nodes, start=0, goal=4)
+    assert expanded_nodes >= 1
 
 
 def test_astar_triangle_shortest():
@@ -87,6 +87,33 @@ def test_astar_path_starts_and_ends_correctly():
     path, _ = astar(graph, nodes, start=0, goal=9)
     assert path[0] == 0
     assert path[-1] == 9
+
+
+def test_astar_ignores_stale_entries_when_counting_expansions():
+    nodes = np.array(
+        [
+            [0.0, 0.0],
+            [-1.0, 0.0],
+            [2.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 10.0],
+            [-10.0, 0.0],
+        ]
+    )
+    graph = {
+        0: [1, 2],
+        1: [0, 3],
+        2: [0, 3],
+        3: [1, 2, 4],
+        4: [3, 5],
+        5: [4],
+    }
+
+    path, expanded_nodes = astar(graph, nodes, start=0, goal=5)
+
+    assert path == [0, 2, 3, 4, 5]
+    assert expanded_nodes == 6
+    assert expanded_nodes <= len(graph)
 
 
 # ── path_length tests ─────────────────────────────────────────────────────────

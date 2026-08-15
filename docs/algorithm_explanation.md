@@ -1,326 +1,130 @@
 # Algorithm Explanation
 
-## 1. Problem Statement
+## Problem and map model
 
-Given a 2D binary image representing a robot environment, where black pixels denote obstacles and white pixels denote free space, the objective is to find a collision-free path from a start coordinate to a goal coordinate.
-
-This is a standard motion-planning problem in robotics. In this project, the environment is represented as a 2D occupancy map and the planner searches for a feasible path while avoiding obstacles and unsafe regions.
-
----
-
-## 2. Map Representation
-
-The planner works with binary maps:
+The project plans point-to-point paths on static 2D occupancy images. Coordinates use `(row, column)` order and the internal binary representation is:
 
 ```text
 0   = obstacle
 255 = free space
 ```
 
-All input maps are loaded as grayscale images and thresholded into binary obstacle maps. This keeps the planning pipeline simple and consistent across generated maps and uploaded maps.
+File loading and Streamlit uploads share one binarization rule: grayscale values at or below 127 become obstacles, and values above 127 become free space.
 
-Before planning, obstacle clearance can be applied to the map. This creates a safer planning region by shrinking the available free space around obstacles.
+Start and goal coordinates are validated before planning. A point is rejected with a descriptive error if it is outside the map, occupied in the original map, or removed by the selected clearance.
 
----
+## Pixel-grid obstacle clearance
 
-## 3. Obstacle Clearance
-
-A robot is not a point mass. If the robot has a physical radius, it should not pass directly next to walls or obstacles. To model this safety margin, the project applies obstacle clearance before sampling nodes or checking roadmap edges.
-
-This is implemented using morphological erosion on the free-space map:
+Clearance is applied by eroding white free space with an all-ones square kernel:
 
 ```python
-kernel = np.ones((2 * clearance + 1, 2 * clearance + 1), dtype=np.uint8)
-safe_map = cv2.erode(obstacle_map, kernel)
+kernel_size = 2 * clearance + 1
+safe_map = cv2.erode(obstacle_map, np.ones((kernel_size, kernel_size), np.uint8))
 ```
 
-Eroding the white free-space region is equivalent to inflating the black obstacle region. Planning is then performed on the clearance-applied map.
+This is equivalent to conservative obstacle inflation on the pixel grid. The margin is square, so it must not be interpreted as an exact circular robot radius or an exact continuous configuration-space model. Sampling and collision checks use the clearance-applied map; validation also retains the original map so errors can distinguish an obstacle from a clearance violation.
 
----
+## Probabilistic Roadmap
 
-## 4. Start and Goal Validation
-
-Before building the roadmap, the start and goal coordinates are validated against both the original map and the clearance-applied map.
-
-A coordinate is rejected if:
+The primary planner is an ordinary Probabilistic Roadmap (PRM):
 
 ```text
-1. It lies outside the map bounds.
-2. It lies inside an obstacle in the original map.
-3. It becomes invalid after obstacle clearance is applied.
+1. Uniformly sample N distinct valid free-space pixels.
+2. Insert start and goal as additional anchor vertices.
+3. Build a KDTree over all vertices.
+4. Query nearby candidate neighbors for each vertex.
+5. Reject every candidate edge that fails collision checking.
+6. Add accepted edges in both directions.
+7. Run A* from the start anchor to the goal anchor.
 ```
 
-This prevents misleading planning failures where the algorithm appears unable to find a path, but the actual issue is an invalid start or goal point.
+Sampling uses `numpy.random.default_rng(seed)` for reproducibility and does not modify NumPy's global random state. A configurable border margin excludes image-edge samples independently of obstacle clearance.
 
----
+Start and goal are not included in the requested sample count. For example, 500 sampled configurations plus two anchors produce 502 total graph vertices. Anchors receive a wider neighbor-candidate query (`3 * k`, capped by graph size), but every anchor connection passes the same collision checker as other roadmap edges.
 
-## 5. Probabilistic Roadmap Method
+A finite roadmap can remain disconnected, especially around narrow passages. Under standard PRM assumptions, the probability of finding a feasible path approaches one as the number of samples increases: ordinary PRM is probabilistically complete. It is not globally optimal, and this implementation is not PRM*.
 
-Probabilistic Roadmap Method is a sampling-based planner. It approximates the connectivity of the free space by constructing a graph of collision-free sampled nodes.
+## KDTree neighbor candidates
 
-In this project, PRM is used as the primary planner.
+`scipy.spatial.KDTree` accelerates nearest-neighbor candidate lookup compared with an explicit all-pairs scan. The tree only proposes nearby vertices; it does not determine whether an edge is valid. Collision checking remains mandatory.
 
-### Roadmap Construction
+KDTree performance depends on the data, dimension, query size, and library implementation. The project therefore does not rely on a universal worst-case speed claim.
+
+## Conservative raster collision checking
+
+The shared collision checker uses a supercover-style traversal. Raster cells are modeled as unit squares centered on integer pixel coordinates. The segment is parameterized over `t` in `[0, 1]` and processes row/column boundary events in order until the next event lies beyond the segment. Endpoint-adjacent cells are checked explicitly, so an endpoint on a half-integer boundary or corner terminates safely without weakening coverage.
+
+At an exact grid-corner crossing, both side-adjacent cells and the diagonal cell are checked. A segment on a cell boundary checks cells on both sides. Out-of-bounds endpoints or traversed cells are collisions. These conservative rules prevent thin obstacles from being skipped by rounded samples and support both integer PRM vertices and floating-point RRT vertices.
+
+This is a raster occupancy test, not exact continuous computational geometry. Its cost scales with the number of grid cells touched by the segment.
+
+## A* roadmap search
+
+Each roadmap edge is weighted by Euclidean distance, and A* uses Euclidean distance to the goal as its heuristic:
 
 ```text
-1. Sample N nodes from free-space pixels.
-2. Add start and goal nodes to the sampled node set.
-3. Build a KD-Tree over all nodes.
-4. For each node, query its k nearest neighbors.
-5. Collision-check each candidate edge.
-6. Add an undirected edge if the segment is collision-free.
+edge(u, v) = ||position(u) - position(v)||2
+h(v)       = ||position(v) - position(goal)||2
 ```
 
-The roadmap is undirected because robot motion between two collision-free points is reversible in this map representation. Therefore, when an edge `u -> v` is valid, the reverse edge `v -> u` is also added.
+Heap entries retain their path cost so stale entries can be discarded. A vertex is expanded only once after a valid non-stale pop. The reported `expanded_nodes` metric is the number of unique valid graph vertices expanded, including the goal when it is reached.
 
-### Query Phase
+Because Euclidean distance is consistent with Euclidean edge weights, A* returns a shortest path on the constructed roadmap. That result is not necessarily the globally shortest path in continuous free space: roadmap sampling and connectivity constrain the available routes.
 
-After the roadmap is built, A* search is used to find a path from the start node to the goal node.
+## Collision-safe shortcut smoothing
+
+The optional greedy smoother looks for non-adjacent path waypoints that can be connected directly. It removes intermediate waypoints only when the proposed shortcut passes the shared collision checker. Empty, one-point, and two-point paths are unchanged; nontrivial smoothing preserves the start and goal and cannot increase Euclidean path length.
+
+The Streamlit and CLI smoothing option applies to PRM + A*. The benchmark and PRM-versus-RRT comparison report unsmoothed planner paths.
+
+## RRT baseline
+
+The comparison planner is a seeded, goal-biased Rapidly-exploring Random Tree:
 
 ```text
-1. Start and goal are inserted into the roadmap.
-2. A* searches over the roadmap graph.
-3. The final output is a sequence of roadmap nodes forming a collision-free path.
+1. Initialize the tree at start.
+2. Randomly sample a point, with occasional goal samples.
+3. Find the nearest current tree node.
+4. Extend by at most the configured step size.
+5. Add the node only if the extension is collision-free.
+6. Connect to goal when it is within the goal radius and the final edge is free.
 ```
 
-### Properties
+If start and goal are the same valid configuration, RRT immediately returns that one-point path. The implementation is a comparison baseline: it has no rewiring, path smoothing, or optimized nearest-neighbor structure. Its measured performance describes this code on the tested maps and seeds, not RRT implementations in general.
 
-| Property        | Description                                                                             |
-| --------------- | --------------------------------------------------------------------------------------- |
-| Completeness    | Probabilistically complete under suitable sampling assumptions                          |
-| Optimality      | Not guaranteed optimal; path quality depends on sampling density and graph connectivity |
-| Query type      | Suitable for multi-query settings when the roadmap is reused                            |
-| Best suited for | Static environments with repeated planning queries                                      |
+## Implementation-aware complexity
 
----
+Let `N` be the graph-vertex count, `k` the requested candidate-neighbor count, `E` the accepted undirected edges, and `C` the cell-traversal cost of one proposed edge.
 
-## 6. Free-Space Sampling
+| Operation | Practical cost description |
+| --- | --- |
+| Binary mask and clearance | Linear in image pixels, multiplied by morphology implementation factors |
+| Free-position collection and sampling | Scans the image, then selects the requested samples |
+| KDTree build and queries | Commonly near `N log N` for this low-dimensional use, but data- and implementation-dependent |
+| Roadmap edge validation | Approximately `N * k` candidate checks plus wider anchor queries; each check costs `C` |
+| A* | Heap-based graph search, commonly described as `O((N + E) log N)` |
+| RRT | Scales with attempted iterations; this baseline rebuilds a KDTree for each nearest-node query and performs segment checks |
 
-The function `sample_free_space()` samples nodes uniformly from valid free-space pixels.
+In the measured Python implementation, conservative collision checking across many candidate edges makes roadmap construction the practical bottleneck; A* search is much smaller in the recorded deterministic runs.
 
-It uses a `border_margin` parameter to avoid sampling too close to the image boundary. This is separate from obstacle clearance.
+## Benchmark semantics
 
-```text
-obstacle clearance -> avoids obstacles and walls
-border margin      -> avoids sampling directly on image edges
-```
+`scripts/benchmark.py` runs the complete PRM + A* pipeline on fixed scenarios with seed 42. It records sampled configurations, total graph vertices, accepted edges, unique A* expansions, path status and length, roadmap build time, search time, and total time.
 
-The sampler uses a local NumPy random generator:
-
-```python
-rng = np.random.default_rng(seed)
-chosen_indices = rng.choice(len(valid_positions), size=num_samples, replace=False)
-```
-
-This keeps sampling reproducible without modifying NumPy's global random state.
-
----
-
-## 7. KD-Tree Nearest-Neighbor Search
-
-After sampling the nodes, the planner must decide which nearby nodes should be connected.
-
-A naive approach would compare every node with every other node, which is expensive for large node sets. This project uses `scipy.spatial.KDTree` for nearest-neighbor lookup.
-
-```python
-kdtree = KDTree(nodes)
-_, standard_neighbors = kdtree.query(nodes, k=k_neighbors + 1)
-```
-
-The extra neighbor is requested because the closest point to a node is the node itself. The implementation removes this self-neighbor before checking candidate edges.
-
-Start and goal nodes are treated as anchor nodes and are queried with a wider neighbor search. This improves their chance of connecting to the roadmap, especially in constrained map regions.
-
----
-
-## 8. Collision Checking
-
-For every candidate roadmap edge, the planner checks whether the straight-line segment between the two nodes intersects an obstacle.
-
-The segment is sampled at approximately one-pixel resolution:
-
-```python
-distance = np.linalg.norm(node2 - node1)
-num_checks = max(int(np.ceil(distance)) + 1, 2)
-coords = np.rint(np.linspace(node1, node2, num=num_checks)).astype(int)
-```
-
-The sampled coordinates are then checked against the obstacle map using vectorized NumPy indexing.
-
-An edge is considered invalid if:
-
-```text
-1. Any sampled point lies outside the map.
-2. Any sampled point lies on an obstacle pixel.
-```
-
-This makes long-edge collision checking more reliable than using a fixed number of samples for every edge.
-
----
-
-## 9. A* Search
-
-A* is an informed graph-search algorithm used to find a low-cost path in a weighted graph.
-
-In this project:
-
-```text
-graph nodes = PRM sampled nodes
-graph edges = collision-free roadmap connections
-edge cost   = Euclidean distance between connected nodes
-heuristic   = Euclidean distance to the goal
-```
-
-### A* Update Rule
-
-For each neighbor of the current node, the algorithm checks whether a cheaper path to that neighbor has been found.
-
-```python
-new_cost = cost_so_far[current] + distance(current, neighbor)
-
-if new_cost < cost_so_far.get(neighbor, float("inf")):
-    cost_so_far[neighbor] = new_cost
-    priority = new_cost + heuristic(neighbor, goal)
-    came_from[neighbor] = current
-```
-
-This update rule is essential. A node should be updated if a better path to it is discovered.
-
-### Heuristic
-
-The heuristic is Euclidean distance:
-
-```text
-h(node, goal) = sqrt((node.row - goal.row)^2 + (node.col - goal.col)^2)
-```
-
-This is a natural heuristic for 2D path planning because the straight-line distance is a lower bound on the path distance in an obstacle-filled map.
-
----
-
-## 10. Path Smoothing
-
-The path returned by A* is a sequence of roadmap nodes. Since the roadmap is sampled, the path may contain unnecessary intermediate waypoints.
-
-The project includes shortcut-based smoothing. It tries to connect non-adjacent points directly and removes intermediate nodes if the shortcut is collision-free.
-
-```text
-original path:  start -> a -> b -> c -> goal
-smoothed path:  start -> b -> goal
-```
-
-The smoothed path is accepted only when the replacement segment is collision-free.
-
----
-
-## 11. RRT Comparison
-
-Rapidly-exploring Random Tree is included as a comparison algorithm.
-
-RRT is a single-query tree-based planner. It grows a tree from the start node by sampling random points and extending toward them.
-
-```text
-1. Initialize tree with the start node.
-2. Sample a random point, occasionally biased toward the goal.
-3. Find the nearest tree node.
-4. Extend from the nearest node toward the sample.
-5. Add the new node if the extension is collision-free.
-6. Stop when the tree reaches the goal region.
-```
-
-### PRM and RRT Comparison
-
-| Aspect           | PRM + A*                              | RRT                                        |
-| ---------------- | ------------------------------------- | ------------------------------------------ |
-| Planner type     | Roadmap-based                         | Tree-based                                 |
-| Query type       | Better suited for reusable roadmaps   | Single-query                               |
-| Path quality     | Often shorter on the tested maps      | Often longer without rewiring or smoothing |
-| Runtime behavior | Roadmap construction can be expensive | Can be fast in open spaces                 |
-| Best suited for  | Static maps with repeated queries     | Single-query exploration                   |
-
-The project includes `scripts/compare_algorithms.py` to compare both approaches on the same maps and start-goal pairs.
-
----
-
-## 12. Complexity Analysis
-
-Let:
-
-```text
-N = number of PRM nodes
-k = number of nearest neighbors attempted per node
-C = cost of collision checking one edge
-V = number of graph vertices
-E = number of graph edges
-H, W = map height and width
-```
-
-| Operation                             | Approximate Complexity                                    |
-| ------------------------------------- | --------------------------------------------------------- |
-| Free-space mask construction          | O(H * W)                                                  |
-| Sampling from valid free-space pixels | O(N) after valid positions are collected                  |
-| KD-Tree construction                  | O(N log N) average case                                   |
-| Nearest-neighbor queries              | Approximately O(N log N) average case for fixed k         |
-| Roadmap edge validation               | O(N * k * C)                                              |
-| A* search                             | O((V + E) log V)                                          |
-| RRT planning                          | Depends on iterations and nearest-neighbor implementation |
-
-For image maps, the most expensive part is usually roadmap construction because collision checking is performed for many candidate edges.
-
----
-
-## 13. Benchmarking
-
-The benchmark script evaluates PRM + A* across fixed map scenarios and records:
-
-```text
-number of nodes
-number of roadmap edges
-A* explored nodes
-path found or not
-path length
-roadmap build time
-A* search time
-total planning time
-```
-
-The comparison script evaluates PRM + A* against RRT and saves results as CSV files.
+`scripts/compare_algorithms.py` performs 10 fresh runs per algorithm and scenario using matched seeds 42-51. PRM time includes sampling, roadmap construction, anchor connection, and A*. RRT time includes complete planning. Runtime statistics use all attempted runs; path-length statistics use successful runs only. Both scripts validate result sanity before writing:
 
 ```text
 outputs/benchmark_results.csv
 outputs/comparison_results.csv
 ```
 
-These result files are used to keep the project measurable and reproducible.
+Timing values are machine- and run-specific. The comparison is an implementation benchmark, not a universal ranking of PRM and RRT.
 
----
+## Limitations
 
-## 14. Limitations
-
-The current implementation assumes:
-
-```text
-1. Static 2D binary maps.
-2. Point-to-point planning in image coordinates.
-3. Straight-line local connections.
-4. No robot dynamics or velocity constraints.
-5. No moving obstacles.
-```
-
-The PRM path quality depends on the number of samples, the neighbor count, and the obstacle layout. Narrow passages may require more samples or stronger start-goal connectivity.
-
----
-
-## 15. Future Work
-
-Possible extensions include:
-
-```text
-1. PRM* for asymptotically optimal roadmap planning.
-2. RRT* for rewiring-based tree optimization.
-3. Multi-query mode with cached roadmaps.
-4. Weighted terrain costs instead of binary obstacles.
-5. Dynamic obstacle handling with D* Lite or kinodynamic planners.
-6. 3D occupancy-grid planning for drone navigation.
-7. Interactive point selection in the Streamlit interface.
-```
+- Static 2D binary maps only; no terrain costs or moving obstacles.
+- Point planning with no robot dynamics, turning limits, or velocity constraints.
+- Square raster clearance rather than exact robot geometry.
+- Straight-line local connections checked conservatively on pixels.
+- Finite PRM roadmaps may be disconnected and are rebuilt for each current CLI or app query.
+- Ordinary PRM and baseline RRT do not provide continuous-space optimality.

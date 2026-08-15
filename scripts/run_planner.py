@@ -177,6 +177,7 @@ def main() -> None:
     print(f"\n[3/5] Building PRM roadmap (nodes={args.nodes}, k={args.neighbors}) ...")
     t0 = time.perf_counter()
     nodes = sample_free_space(safe_map, args.nodes, seed=args.seed)
+    sampled_node_count = len(nodes)
 
     start_in_graph = len(nodes)
     goal_in_graph  = len(nodes) + 1
@@ -195,7 +196,7 @@ def main() -> None:
     goal_idx  = goal_in_graph
 
     t1 = time.perf_counter()
-    path, explored = astar(edges, nodes, start_idx, goal_idx)
+    path, expanded_nodes = astar(edges, nodes, start_idx, goal_idx)
     search_time = time.perf_counter() - t1
 
     px_length = path_length(path, nodes)
@@ -209,9 +210,10 @@ def main() -> None:
 
     stats = PlanningStats(
         map_name=map_path.name,
-        num_nodes=len(nodes),
+        num_sampled_nodes=sampled_node_count,
+        num_graph_nodes=len(nodes),
         num_edges=total_edges,
-        astar_explored=explored,
+        astar_expanded_nodes=expanded_nodes,
         path_found=len(path) > 0,
         path_length_px=smooth_length if args.smooth else px_length,
         build_time_s=build_time,
