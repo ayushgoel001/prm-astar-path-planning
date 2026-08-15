@@ -1,66 +1,205 @@
 # PRM + A* Path Planning on 2D Occupancy Maps
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+A 2D motion-planning system built with **Probabilistic Roadmaps (PRM), KDTree nearest-neighbor search, A*, collision checking, and RRT benchmarking** on binary occupancy maps.
 
-A Python implementation of sampling-based path planning on binary image maps. The primary planner combines a Probabilistic Roadmap (PRM), KDTree neighbor lookup, and A* search; the repository also includes a goal-biased RRT baseline, CLI and Streamlit interfaces, reproducible benchmarks, and automated tests.
+The project focuses on algorithmic correctness, reproducibility, testing, and measurable planner behavior through a CLI, Streamlit interface, automated benchmarks, and CI.
 
-## Key engineering highlights
+**Tech:** Python · NumPy · SciPy · OpenCV · Matplotlib · Streamlit · pytest · GitHub Actions
 
-- End-to-end PRM pipeline: seeded free-space sampling, start/goal anchors, KDTree neighbor candidates, collision-checked roadmap construction, and A* with Euclidean costs and heuristic.
-- Conservative supercover-style raster collision checking for integer PRM nodes and floating-point RRT nodes, including corner contacts, boundary-aligned segments, and half-integer endpoints.
-- Shared map thresholding, square-kernel pixel clearance, descriptive planning-point validation, and collision-safe shortcut smoothing.
-- **73 automated tests** covering algorithms, edge cases, benchmark methodology, and end-to-end integration.
-- Deterministic 500-sample roadmaps produced **2,233–5,312 accepted edges**, with **8–355 unique A* expanded nodes** and **1.5–19.6 ms A* search time** across four scenarios.
-- PRM + A* and RRT were evaluated over **60 matched-seed planning attempts**; PRM produced shorter successful paths in all three tested comparison scenarios.
-- Reproducible CLI and Streamlit workflows with pytest CI on Python 3.10 and 3.11.
+---
 
-## Planning pipeline
+## Highlights
 
-```text
-grayscale image
-    -> shared binary threshold (0 obstacle, 255 free)
-    -> optional square-kernel clearance
-    -> validate start and goal
-    -> sample PRM configurations
-    -> insert start/goal anchors
-    -> KDTree neighbor candidates
-    -> collision-checked undirected roadmap
-    -> A* roadmap search
-    -> optional collision-safe shortcut smoothing
-```
+* Built an end-to-end **PRM + KDTree + A*** planning pipeline for static 2D occupancy maps.
+* Constructed roadmaps from **500 sampled configurations + start/goal anchors**, producing **2,233–5,312 collision-validated edges** across deterministic benchmarks.
+* Implemented Euclidean A* search with stale-entry handling, requiring **8–355 unique node expansions** and **1.5–19.6 ms query time** across four benchmark scenarios.
+* Added conservative raster collision checking, obstacle clearance, start/goal validation, and collision-safe shortcut smoothing.
+* Implemented a seeded **goal-biased RRT** baseline and evaluated both planners across **60 matched-seed planning attempts**.
+* Developed **73 automated tests** covering algorithms, edge cases, benchmark methodology, and the complete planning pipeline.
+* Added reproducible CLI and Streamlit workflows with pytest CI on Python 3.10 and 3.11.
 
-## Engineering details
+---
 
-- PRM samples distinct valid free-space pixels using a local seeded NumPy generator.
-- Start and goal are inserted as graph anchors and receive a wider neighbor-candidate query (`3 * k`); every proposed edge still passes the shared collision checker.
-- A* discards stale heap entries and reports unique valid graph vertices expanded. It returns a shortest path on the constructed roadmap, not necessarily the globally shortest continuous-space path.
-- Clearance erodes free space using a square `(2c + 1) x (2c + 1)` kernel. It is a conservative pixel-grid margin, not an exact circular robot footprint.
-- Shortcut smoothing removes waypoints only when the replacement segment is collision-free. The app exposes smoothing for PRM + A* only.
-- RRT is a seeded comparison baseline without rewiring or smoothing; its nearest-neighbor implementation is intentionally not optimized.
+## Example Results
 
-This is ordinary PRM, not PRM*. Finite roadmaps can be disconnected; under standard assumptions, PRM is probabilistically complete as sampling increases but is not globally optimal.
-
-## Example outputs
-
-| PRM path on Maze 1 Hard | PRM + A* and RRT comparison |
-| --- | --- |
+| PRM + A* path                                        | PRM + A* vs RRT                                            |
+| ---------------------------------------------------- | ---------------------------------------------------------- |
 | ![PRM path on Maze 1 Hard](assets/prm_maze_hard.png) | ![PRM and RRT comparison](assets/prm_vs_rrt_maze_hard.png) |
 
-## Repository structure
+---
+
+## Planning Pipeline
 
 ```text
-app.py                         Streamlit interface
-src/                           planners and shared map/collision utilities
-scripts/run_planner.py         PRM + A* command-line entry point
-scripts/benchmark.py           deterministic PRM benchmark
-scripts/compare_algorithms.py  repeated PRM-versus-RRT comparison
-tests/                         unit, regression, methodology, and integration tests
-examples/                      synthetic occupancy maps
-outputs/                       tracked benchmark CSVs
-assets/                        selected result figures
-.github/workflows/ci.yml       pytest CI for Python 3.10 and 3.11
+Occupancy map
+     |
+     v
+Binary map preprocessing
+     |
+     v
+Obstacle clearance
+     |
+     v
+Start / goal validation
+     |
+     v
+Free-space sampling
+     |
+     v
+KDTree neighbor lookup
+     |
+     v
+Collision-checked PRM roadmap
+     |
+     v
+A* graph search
+     |
+     v
+Optional shortcut smoothing
+     |
+     v
+Collision-free path
 ```
+
+---
+
+## Core Components
+
+### Probabilistic Roadmap
+
+The planner samples valid free-space configurations and connects nearby nodes to construct an undirected roadmap.
+
+Start and goal are inserted separately as anchor vertices and receive a wider neighbor-candidate search to improve their chance of connecting to the roadmap. Every proposed connection still passes the same collision checker.
+
+Sampling is seeded for reproducibility.
+
+### KDTree Neighbor Search
+
+`scipy.spatial.KDTree` is used to efficiently retrieve nearby candidate nodes instead of performing an explicit all-pairs neighbor search.
+
+The KDTree only proposes candidates; edge validity is determined separately through collision checking.
+
+### A* Search
+
+A* searches the PRM roadmap using:
+
+* Euclidean edge weights
+* Euclidean distance as the heuristic
+* stale priority-queue entry filtering
+* unique expanded-node accounting
+
+A* returns a shortest path **on the constructed roadmap**. The resulting path is not necessarily the globally shortest path in continuous free space.
+
+### Collision Checking
+
+Roadmap and RRT edges use a conservative raster traversal that checks grid cells touched by the segment.
+
+This prevents thin obstacles from being skipped and supports both integer PRM configurations and floating-point RRT nodes.
+
+### Obstacle Clearance
+
+Obstacle clearance is implemented by shrinking free space using a square morphological kernel.
+
+This provides a conservative pixel-grid safety margin around obstacles.
+
+### Path Smoothing
+
+PRM paths can optionally be simplified using shortcut smoothing.
+
+Intermediate waypoints are removed only when the direct replacement segment remains collision-free.
+
+### RRT Baseline
+
+A seeded, goal-biased Rapidly-exploring Random Tree is included as a comparison planner.
+
+The benchmark compares PRM + A* and RRT using matched random seeds and identical planning scenarios.
+
+---
+
+## Benchmark Highlights
+
+The deterministic PRM benchmark uses:
+
+```text
+Samples:     500
+Neighbors:   20
+Clearance:   3 px
+Seed:        42
+Graph nodes: 502 including start and goal
+```
+
+Across four benchmark scenarios:
+
+| Metric                 |  Observed Range |
+| ---------------------- | --------------: |
+| Accepted roadmap edges | **2,233–5,312** |
+| A* expanded nodes      |       **8–355** |
+| A* search time         | **1.5–19.6 ms** |
+
+Complete build/search timings and path statistics are available in:
+
+[`outputs/benchmark_results.csv`](outputs/benchmark_results.csv)
+
+Runtime measurements are machine-specific.
+
+---
+
+## PRM vs RRT Evaluation
+
+PRM + A* and goal-biased RRT were evaluated across:
+
+**3 scenarios × 10 seeds × 2 planners = 60 planning attempts**
+
+The comparison measures:
+
+* success rate
+* runtime
+* successful-path length
+* PRM roadmap size
+* RRT tree size
+
+Both algorithms use the same seed set for every scenario.
+
+The experiments showed different planner trade-offs: PRM generated shorter successful paths across the tested scenarios, while the RRT baseline had lower single-query runtime in this implementation.
+
+Full results, including unsuccessful attempts, are available in:
+
+[`outputs/comparison_results.csv`](outputs/comparison_results.csv)
+
+The measurements describe this implementation and benchmark configuration rather than universal PRM/RRT performance.
+
+---
+
+## Testing
+
+Run the complete test suite with:
+
+```bash
+python -m pytest tests/ -v
+```
+
+Current suite:
+
+**73 tests passing**
+
+Coverage includes:
+
+* map binarization
+* obstacle clearance
+* start/goal validation
+* raster collision checking
+* PRM sampling
+* roadmap construction
+* A* shortest-path behavior
+* stale A* queue entries
+* RRT planning
+* path smoothing
+* benchmark aggregation
+* end-to-end PRM → A* planning
+
+GitHub Actions runs the test suite on Python 3.10 and 3.11.
+
+---
 
 ## Installation
 
@@ -70,71 +209,115 @@ cd prm-astar-path-planning
 pip install -r requirements.txt
 ```
 
-Python 3.10 or newer is recommended.
+Python 3.10+ is recommended.
+
+---
 
 ## Usage
 
-Run PRM + A* from the command line:
+### Command Line
 
 ```bash
-python scripts/run_planner.py --map examples/maze_1.png --nodes 500 --neighbors 20 --start 5,235 --goal 350,450 --clearance 3 --seed 42 --smooth --no-show
+python scripts/run_planner.py \
+  --map examples/maze_1.png \
+  --nodes 500 \
+  --neighbors 20 \
+  --start 5,235 \
+  --goal 350,450 \
+  --clearance 3 \
+  --seed 42 \
+  --smooth \
+  --no-show
 ```
 
-Coordinates use **`(row, column)`** order. `--nodes` specifies sampled PRM configurations; start and goal are added separately. `--no-show` suppresses the display window, and `--save PATH` writes a result image.
+Coordinates use:
 
-Run the Streamlit interface:
+```text
+(row, column)
+```
+
+`--nodes` specifies sampled PRM configurations. Start and goal are added separately to the roadmap.
+
+### Streamlit Demo
 
 ```bash
 streamlit run app.py
 ```
 
-The app supports built-in or uploaded maps, validated start/goal coordinates, PRM + A* or RRT planning, configurable clearance and seeds, and downloadable result figures.
+The interface supports:
 
-## Tests and CI
+* built-in or uploaded maps
+* PRM + A* or RRT planning
+* configurable start and goal
+* obstacle clearance
+* random seed control
+* PRM smoothing
+* result visualization and download
 
-```bash
-python -m pytest tests/ -v
-```
-
-The 73-test suite covers shared binarization, clearance, planning-point validation, conservative collision traversal, PRM construction, A*, RRT, smoothing, benchmark aggregation, and the complete PRM-to-A* pipeline. GitHub Actions runs the suite on Python 3.10 and 3.11.
-
-## Deterministic PRM benchmark
-
-`scripts/benchmark.py` runs one unsmoothed PRM + A* plan per scenario with seed 42, 500 sampled configurations, `k = 20`, and clearance 3. Adding start and goal produces 502 graph vertices.
-
-| Scenario | Samples | Graph vertices | Edges | A* expanded nodes | Path length (px) | A* search (ms) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Maze 1 Easy | 500 | 502 | 3908 | 8 | 220.1 | 1.8 |
-| Maze 1 Hard | 500 | 502 | 3867 | 43 | 626.8 | 1.5 |
-| Maze 2 Grid | 500 | 502 | 2233 | 355 | 824.9 | 19.6 |
-| Maze 3 Obstacles | 500 | 502 | 5312 | 92 | 637.8 | 11.1 |
-
-Complete build/search timing data is available in [outputs/benchmark_results.csv](outputs/benchmark_results.csv); timings are machine-specific.
-
-## Matched-seed PRM versus RRT comparison
-
-`scripts/compare_algorithms.py` runs 10 fresh attempts per algorithm and scenario using matched seeds 42–51: 60 attempts across three scenarios. PRM runtime includes sampling, roadmap construction, anchor connection, and A*; RRT runtime includes complete planning. Runtime statistics include all attempts, while path-length statistics include successful runs only. Neither planner is smoothed.
-
-PRM produced shorter successful paths across all three tested scenarios, while RRT showed lower single-query runtime in this implementation. Results describe this implementation and fixed configuration, not universal planner performance. Full success-rate, runtime, path-length, and graph/tree-size data—including failed attempts—is available in [outputs/comparison_results.csv](outputs/comparison_results.csv).
-
-Run both reports with:
+### Benchmarks
 
 ```bash
 python scripts/benchmark.py
 python scripts/compare_algorithms.py
 ```
 
+---
+
+## Repository Structure
+
+```text
+prm-astar-path-planning/
+│
+├── app.py                         # Streamlit application
+├── src/
+│   ├── astar.py                   # A* roadmap search
+│   ├── collision_checker.py       # Raster collision checking
+│   ├── map_loader.py              # Map preprocessing and clearance
+│   ├── prm.py                     # PRM sampling and roadmap construction
+│   ├── rrt.py                     # RRT comparison planner
+│   ├── smoother.py                # Shortcut path smoothing
+│   ├── utils.py
+│   └── visualizer.py
+│
+├── scripts/
+│   ├── run_planner.py             # CLI planner
+│   ├── benchmark.py               # Deterministic PRM benchmark
+│   ├── compare_algorithms.py      # Matched-seed PRM/RRT comparison
+│   └── generate_maps.py
+│
+├── tests/                         # Unit, regression and integration tests
+├── examples/                      # Example occupancy maps
+├── outputs/                       # Benchmark CSV results
+├── assets/                        # Selected result visualizations
+├── docs/
+│   └── algorithm_explanation.md
+│
+└── .github/workflows/ci.yml
+```
+
+---
+
+## Algorithm Notes
+
+This implementation uses **classical PRM**, not PRM*.
+
+Finite-sample roadmaps may remain disconnected, particularly in constrained environments. Under standard assumptions, PRM is probabilistically complete as the sample count increases, but classical PRM does not provide continuous-space optimality guarantees.
+
+For a more detailed discussion of PRM, KDTree lookup, A*, collision checking, RRT, complexity, and planner limitations, see:
+
+[`docs/algorithm_explanation.md`](docs/algorithm_explanation.md)
+
+---
+
 ## Limitations
 
-- Static 2D binary occupancy maps and straight-line local motion only.
-- Square raster clearance rather than exact robot geometry or dynamics.
-- Finite-sample PRM roadmaps can be disconnected, particularly around narrow passages.
-- The CLI and app rebuild a roadmap for each query rather than caching a multi-query roadmap.
-- Conservative Python collision traversal dominates measured roadmap-construction time.
-- The RRT baseline rebuilds a KDTree for nearest-node queries and is not optimized.
-- Neither ordinary PRM nor baseline RRT guarantees continuous-space global optimality.
+* Static 2D binary occupancy maps only.
+* Straight-line local connections without robot dynamics.
+* Conservative raster clearance rather than exact robot geometry.
+* Finite PRM roadmaps may remain disconnected in difficult environments.
+* Roadmaps are currently rebuilt for each CLI/app query.
 
-See [docs/algorithm_explanation.md](docs/algorithm_explanation.md) for implementation details and algorithm guarantees.
+---
 
 ## License
 
