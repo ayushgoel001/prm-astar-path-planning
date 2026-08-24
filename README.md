@@ -22,12 +22,10 @@ The project focuses on algorithmic correctness, reproducibility, testing, and me
 
 ## Example Results
 
-### PRM Roadmap & A* Path
+### PRM + A* Planning Pipeline
 
 <p align="center">
-  <img src="assets/prm_maze_hard_readme.png"
-       alt="PRM roadmap construction and A* path"
-       width="92%">
+  <img src="assets/prm_maze_hard.png" alt="PRM + A* path planning result" width="95%">
 </p>
 
 <p align="center">
@@ -39,13 +37,11 @@ The project focuses on algorithmic correctness, reproducibility, testing, and me
 ### PRM + A* vs Goal-Biased RRT
 
 <p align="center">
-  <img src="assets/prm_vs_rrt_maze_hard_readme.png"
-       alt="PRM and RRT planner comparison"
-       width="92%">
+  <img src="assets/prm_vs_rrt_maze_hard.png" alt="PRM + A* versus RRT comparison" width="95%">
 </p>
 
 <p align="center">
-  <i>PRM + A* and goal-biased RRT evaluated on the same planning scenario.</i>
+  <i>Visual comparison of PRM + A* and goal-biased RRT on the same planning scenario.</i>
 </p>
 
 ---
