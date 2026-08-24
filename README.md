@@ -22,9 +22,27 @@ The project focuses on algorithmic correctness, reproducibility, testing, and me
 
 ## Example Results
 
-| PRM + A* path                                        | PRM + A* vs RRT                                            |
-| ---------------------------------------------------- | ---------------------------------------------------------- |
-| ![PRM path on Maze 1 Hard](assets/prm_maze_hard.png) | ![PRM and RRT comparison](assets/prm_vs_rrt_maze_hard.png) |
+### PRM + A* Planning Pipeline
+
+<p align="center">
+  <img src="assets/prm_maze_hard.png" alt="PRM + A* path planning result" width="95%">
+</p>
+
+<p align="center">
+  <i>PRM roadmap construction and collision-free A* path on the benchmark occupancy map.</i>
+</p>
+
+<br>
+
+### PRM + A* vs Goal-Biased RRT
+
+<p align="center">
+  <img src="assets/prm_vs_rrt_maze_hard.png" alt="PRM + A* versus RRT comparison" width="95%">
+</p>
+
+<p align="center">
+  <i>Visual comparison of PRM + A* and goal-biased RRT on the same planning scenario.</i>
+</p>
 
 ---
 
